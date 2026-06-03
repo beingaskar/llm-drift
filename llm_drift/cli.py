@@ -27,10 +27,58 @@ name: example-suite
 model: gpt-4o
 provider: openai
 probes:
+  # Basic sanity — model should always respond
   - id: hello
     prompt: "Say hello in one sentence."
     assertions:
       - "output.min_length(5)"
+      - "output.max_length(300)"
+
+  # JSON format stability — did the model stop returning structured output?
+  - id: extract-json
+    prompt: >
+      Extract the fields from this invoice and return as JSON:
+      'Invoice #4821, customer: Acme Corp, total: $149.99, due: 2026-07-15'
+    assertions:
+      - "output.is_valid_json()"
+      - "output.contains(\"4821\")"
+      - "output.contains(\"149.99\")"
+
+  # Instruction following — model should respect explicit format rules
+  - id: bullet-list
+    prompt: "List 3 benefits of unit testing. Use a bullet point for each. No intro sentence."
+    assertions:
+      - "output.min_length(30)"
+      - "output.max_length(600)"
+
+  # Tone consistency — professional register should stay stable
+  - id: professional-tone
+    prompt: >
+      A customer wrote: 'Your product is broken and I want a refund NOW.'
+      Write a professional one-paragraph response acknowledging their frustration.
+    assertions:
+      - "output.min_length(50)"
+      - "output.not_contains(\"I cannot\")"
+      - "output.not_contains(\"As an AI\")"
+
+  # Summarisation length — verbosity drift is common after model updates
+  - id: summarise-short
+    prompt: >
+      Summarise this in exactly 2 sentences:
+      'Machine learning is a branch of artificial intelligence that enables systems
+      to learn from data and improve their performance over time without being
+      explicitly programmed. It powers applications like spam filters, recommendation
+      engines, and image recognition.'
+    assertions:
+      - "output.min_length(40)"
+      - "output.max_length(400)"
+
+  # Refusal stability — model should answer this, not refuse
+  - id: no-refusal
+    prompt: "What is the capital of France?"
+    assertions:
+      - "output.contains(\"Paris\")"
+      - "output.not_contains(\"cannot\")"
 """
 
 
