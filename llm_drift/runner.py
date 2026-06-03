@@ -17,6 +17,11 @@ class NoBaselineError(Exception):
     pass
 
 
+class BaselineAssertionError(Exception):
+    """Raised when assertions fail at baseline capture time."""
+    pass
+
+
 @dataclass
 class SuiteResult:
     suite_name: str
@@ -56,8 +61,29 @@ class SuiteRunner:
         sem = asyncio.Semaphore(self.concurrency)
         return list(await asyncio.gather(*[self._run_probe(p, sem) for p in self.suite.probes]))
 
-    async def capture_baseline(self) -> str:
+    async def capture_baseline(self, strict: bool = True) -> str:
+        """Capture baseline fingerprints.
+
+        Args:
+            strict: If True (default), raise BaselineAssertionError when any
+                    assertion fails at capture time — prevents storing a broken
+                    baseline that would score future correct runs as regressions.
+        """
         fingerprints = await self._run_all()
+
+        if strict:
+            failures = []
+            for probe, fp in zip(self.suite.probes, fingerprints):
+                for r in fp.assertion_results:
+                    if not r["passed"]:
+                        failures.append(f"  [{probe.id}] {r['expression']}")
+            if failures:
+                raise BaselineAssertionError(
+                    "Baseline capture aborted — assertions failed on the current model output.\n"
+                    "Fix the assertions or re-run once the model output meets your expectations:\n"
+                    + "\n".join(failures)
+                )
+
         return await self.store.save(self.suite.name, fingerprints)
 
     async def run(self) -> SuiteResult:

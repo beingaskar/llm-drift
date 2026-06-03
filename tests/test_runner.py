@@ -7,7 +7,7 @@ import pytest
 
 from llm_drift.fingerprint import Fingerprint
 from llm_drift.models import Probe, ProbeSuite
-from llm_drift.runner import NoBaselineError, SuiteResult, SuiteRunner
+from llm_drift.runner import BaselineAssertionError, NoBaselineError, SuiteResult, SuiteRunner
 from llm_drift.store import SQLiteStore
 
 
@@ -78,6 +78,40 @@ async def test_runner_run_persists_result_to_store(tmp_path: Path):
     results = await store.list_results("test-suite")
     assert len(results) == 1
     assert results[0]["drift_score"] == pytest.approx(result.drift_score, abs=1e-4)
+
+
+async def test_capture_baseline_raises_if_assertion_fails_at_capture(tmp_path: Path):
+    # Model returns plain text but assertion expects JSON — baseline should be rejected
+    suite = ProbeSuite(
+        name="test-suite",
+        model="gpt-4o",
+        probes=[Probe(id="p1", prompt="hello", assertions=["output.is_valid_json()"])],
+    )
+    store = SQLiteStore(tmp_path / "db")
+    adapter = _adapter(response="this is plain text, not json")
+    runner = SuiteRunner(suite, adapter, store, ConstantEmbeddingModel())
+
+    with pytest.raises(BaselineAssertionError) as exc_info:
+        await runner.capture_baseline(strict=True)
+
+    assert "p1" in str(exc_info.value)
+    assert "is_valid_json" in str(exc_info.value)
+    # Nothing stored — baseline was rejected
+    assert await store.load_latest("test-suite") is None
+
+
+async def test_capture_baseline_strict_false_stores_despite_failures(tmp_path: Path):
+    suite = ProbeSuite(
+        name="test-suite",
+        model="gpt-4o",
+        probes=[Probe(id="p1", prompt="hello", assertions=["output.is_valid_json()"])],
+    )
+    store = SQLiteStore(tmp_path / "db")
+    runner = SuiteRunner(suite, _adapter(response="plain text"), store, ConstantEmbeddingModel())
+
+    await runner.capture_baseline(strict=False)  # should not raise
+
+    assert await store.load_latest("test-suite") is not None
 
 
 async def test_runner_concurrency_limit_respected(tmp_path: Path):
