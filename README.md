@@ -278,11 +278,28 @@ Add drift detection to your pipeline:
 ```
 llm-drift init                                    Scaffold config and example probe
 llm-drift baseline --suite <path>                 Capture a baseline
-llm-drift run --suite <path>                      Run drift detection
+llm-drift baseline --suite <path> --no-strict     Capture even if assertions fail
+llm-drift run --suite <path>                      Run drift detection (+ fires alerts)
 llm-drift run --suite <path> --fail-on-drift      Exit 1 if drifted (CI)
-llm-drift report --suite <name>                   Show drift history table
-llm-drift diff --suite <name>                     Show baseline vs latest raw outputs
+llm-drift report --suite <name|path>              Show drift history table
+llm-drift diff --suite <name|path>                Show baseline vs. latest run, per probe
+llm-drift diff --suite <name|path> --run <id>     Diff against a specific run
 ```
+
+All commands accept `--config <path>` (defaults to `./llm-drift.yaml`). `report` and
+`diff` accept either the suite **name** or the same YAML **path** you pass to
+`baseline`/`run`.
+
+### Notes
+
+- **Determinism:** adapters call the model with `temperature=0` so sampling variance
+  doesn't masquerade as drift. Some residual non-determinism is inherent to LLMs.
+- **Baseline integrity:** `baseline` refuses to store a snapshot whose assertions
+  already fail (use `--no-strict` to override). Probes are matched to the baseline by
+  `id`, so reordering, adding, or removing a probe is reported as an error rather than
+  silently mis-compared.
+- **Alerts:** `run` dispatches the alert channels configured under `alerts:` in
+  `llm-drift.yaml` whenever the drift score exceeds the threshold.
 
 ---
 
@@ -290,14 +307,15 @@ llm-drift diff --suite <name>                     Show baseline vs latest raw ou
 
 ```
 llm_drift/
-├── models.py        Probe, ProbeSuite (Pydantic)
+├── models.py        Probe, ProbeSuite (Pydantic, unique-id validation)
+├── config.py        Config loader for llm-drift.yaml
 ├── adapters.py      ProviderAdapter protocol, OpenAIAdapter, AnthropicAdapter
 ├── fingerprint.py   Fingerprint dataclass, format detection, EmbeddingModel protocol
 ├── assertions.py    AssertionRunner, DSL evaluation
-├── store.py         BaselineStore ABC, SQLiteStore
-├── scorer.py        DriftScorer, DriftResult, per-probe breakdown
+├── store.py         BaselineStore ABC, SQLiteStore (baselines + run outputs)
+├── scorer.py        DriftScorer, DriftResult, probe_id-keyed matching
 ├── runner.py        SuiteRunner, capture_baseline(), run()
-├── alerts.py        AlertDispatcher, SlackAlertBackend, WebhookAlertBackend
+├── alerts.py        AlertDispatcher, Stdout/Slack/Webhook backends, build_dispatcher
 └── cli.py           Click CLI entry point
 ```
 

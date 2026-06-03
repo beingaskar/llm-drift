@@ -30,6 +30,16 @@ _CREATE_RESULTS = """
     )
 """
 
+_CREATE_RUN_OUTPUTS = """
+    CREATE TABLE IF NOT EXISTS run_outputs (
+        run_id     TEXT NOT NULL,
+        suite      TEXT NOT NULL,
+        probe_id   TEXT NOT NULL,
+        raw_output TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+"""
+
 
 class BaselineStore(ABC):
     @abstractmethod
@@ -52,6 +62,14 @@ class BaselineStore(ABC):
     async def list_results(self, suite_name: str) -> List[dict]:
         """Return drift results newest-first: [{run_id, created_at, drift_score, drifted}, ...]."""
 
+    @abstractmethod
+    async def save_run_outputs(self, suite_name: str, run_id: str, fingerprints: List[Fingerprint]) -> None:
+        """Persist the raw probe outputs produced during a drift run (for diffing)."""
+
+    @abstractmethod
+    async def load_run_outputs(self, suite_name: str, run_id: Optional[str] = None) -> Optional[List[dict]]:
+        """Return [{probe_id, raw_output}, ...] for a run (latest run if run_id is None)."""
+
 
 class SQLiteStore(BaselineStore):
     def __init__(self, path: str | Path = ".llm-drift/baselines.db"):
@@ -64,6 +82,7 @@ class SQLiteStore(BaselineStore):
     async def _ensure_schema(self, db: aiosqlite.Connection) -> None:
         await db.execute(_CREATE_RUNS)
         await db.execute(_CREATE_RESULTS)
+        await db.execute(_CREATE_RUN_OUTPUTS)
         await db.commit()
 
     async def save(self, suite_name: str, fingerprints: List[Fingerprint]) -> str:
@@ -123,3 +142,39 @@ class SQLiteStore(BaselineStore):
             {"run_id": r[0], "created_at": r[1], "drift_score": r[2], "drifted": bool(r[3])}
             for r in rows
         ]
+
+    async def save_run_outputs(self, suite_name: str, run_id: str, fingerprints: List[Fingerprint]) -> None:
+        created_at = datetime.now(timezone.utc).isoformat()
+        rows = [
+            (run_id, suite_name, fp.probe_id, fp.raw_output, created_at)
+            for fp in fingerprints
+        ]
+        async with self._open() as db:
+            await self._ensure_schema(db)
+            await db.executemany(
+                "INSERT INTO run_outputs (run_id, suite, probe_id, raw_output, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                rows,
+            )
+            await db.commit()
+
+    async def load_run_outputs(self, suite_name: str, run_id: Optional[str] = None) -> Optional[List[dict]]:
+        async with self._open() as db:
+            await self._ensure_schema(db)
+            if run_id is None:
+                async with db.execute(
+                    "SELECT run_id FROM run_outputs WHERE suite = ? ORDER BY created_at DESC LIMIT 1",
+                    (suite_name,),
+                ) as cur:
+                    row = await cur.fetchone()
+                if row is None:
+                    return None
+                run_id = row[0]
+            async with db.execute(
+                "SELECT probe_id, raw_output FROM run_outputs WHERE suite = ? AND run_id = ?",
+                (suite_name, run_id),
+            ) as cur:
+                rows = await cur.fetchall()
+        if not rows:
+            return None
+        return [{"probe_id": r[0], "raw_output": r[1]} for r in rows]

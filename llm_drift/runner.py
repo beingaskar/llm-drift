@@ -52,7 +52,7 @@ class SuiteRunner:
     async def _run_probe(self, probe: Probe, sem: asyncio.Semaphore) -> Fingerprint:
         async with sem:
             output = await self.adapter.call(probe.prompt)
-        fp = fingerprint(output, self.embedding_model)
+        fp = fingerprint(output, self.embedding_model, probe_id=probe.id)
         results = self._assertion_runner.run(output, probe.assertions)
         fp.assertion_results = [{"expression": r.expression, "passed": r.passed} for r in results]
         return fp
@@ -99,6 +99,8 @@ class SuiteRunner:
         await self.store.save_result(
             self.suite.name, run_id, drift_result.drift_score, drift_result.drifted
         )
+        # Persist raw outputs so `llm-drift diff` can show baseline-vs-run text.
+        await self.store.save_run_outputs(self.suite.name, run_id, currents)
         return SuiteResult(
             suite_name=self.suite.name,
             run_id=run_id,

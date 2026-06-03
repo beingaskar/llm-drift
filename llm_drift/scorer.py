@@ -7,6 +7,11 @@ from typing import Dict, List, Optional
 from llm_drift.fingerprint import Fingerprint
 
 
+class SuiteMismatchError(Exception):
+    """Raised when baseline and current fingerprints describe different probe sets."""
+    pass
+
+
 @dataclass
 class ProbeResult:
     probe_id: str
@@ -65,16 +70,54 @@ class DriftScorer:
     })
     threshold: float = 0.15
 
+    def _align(
+        self,
+        baselines: List[Fingerprint],
+        currents: List[Fingerprint],
+        probe_ids: Optional[List[str]],
+    ):
+        """Pair up baseline/current fingerprints, keyed by probe_id when available.
+
+        Matching by probe_id (rather than list position) means reordering,
+        adding, or removing probes is detected as an error instead of silently
+        comparing the wrong outputs.
+        """
+        have_ids = (
+            all(fp.probe_id for fp in baselines)
+            and all(fp.probe_id for fp in currents)
+        )
+        if have_ids:
+            b_map = {fp.probe_id: fp for fp in baselines}
+            c_map = {fp.probe_id: fp for fp in currents}
+            if set(b_map) != set(c_map):
+                missing = sorted(set(b_map) - set(c_map))
+                added = sorted(set(c_map) - set(b_map))
+                raise SuiteMismatchError(
+                    "Probe set changed since baseline was captured. "
+                    f"Missing in current run: {missing or 'none'}; "
+                    f"new in current run: {added or 'none'}. "
+                    "Re-capture the baseline after editing the suite."
+                )
+            return [(pid, b_map[pid], c_map[pid]) for pid in b_map]
+
+        # Fallback: positional matching for fingerprints without probe ids.
+        if len(baselines) != len(currents):
+            raise SuiteMismatchError(
+                f"Baseline has {len(baselines)} probes but current run has "
+                f"{len(currents)}. Re-capture the baseline after editing the suite."
+            )
+        ids = probe_ids or [str(i) for i in range(len(baselines))]
+        return list(zip(ids, baselines, currents))
+
     def score(
         self,
         baselines: List[Fingerprint],
         currents: List[Fingerprint],
         probe_ids: Optional[List[str]] = None,
     ) -> DriftResult:
-        ids = probe_ids or [str(i) for i in range(len(baselines))]
         w = self.weights
         probe_results = []
-        for probe_id, b, c in zip(ids, baselines, currents):
+        for probe_id, b, c in self._align(baselines, currents, probe_ids):
             semantic = _cosine_distance(b.embedding, c.embedding)
             structural = _structural_distance(b, c)
             assertion = _assertion_regression(b, c)

@@ -114,6 +114,19 @@ async def test_capture_baseline_strict_false_stores_despite_failures(tmp_path: P
     assert await store.load_latest("test-suite") is not None
 
 
+async def test_runner_run_persists_run_outputs(tmp_path: Path):
+    suite = _suite(2)
+    store = SQLiteStore(tmp_path / "db")
+    runner = SuiteRunner(suite, _adapter("some output"), store, ConstantEmbeddingModel())
+    await runner.capture_baseline()
+    result = await runner.run()
+
+    outputs = await store.load_run_outputs("test-suite", result.run_id)
+    assert outputs is not None
+    assert {o["probe_id"] for o in outputs} == {"p0", "p1"}
+    assert all(o["raw_output"] == "some output" for o in outputs)
+
+
 async def test_runner_concurrency_limit_respected(tmp_path: Path):
     max_concurrent = 0
     current = 0

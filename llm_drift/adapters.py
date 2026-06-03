@@ -16,8 +16,11 @@ class ProviderAdapter(Protocol):
 
 
 class OpenAIAdapter:
-    def __init__(self, model: str, client=None):
+    # temperature defaults to 0.0: drift detection needs the most deterministic
+    # output the model can give, so sampling variance doesn't masquerade as drift.
+    def __init__(self, model: str, client=None, temperature: float = 0.0):
         self.model = model
+        self.temperature = temperature
         self._client = client
 
     @property
@@ -35,15 +38,20 @@ class OpenAIAdapter:
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
+                temperature=self.temperature,
             )
-            return response.choices[0].message.content
+            content = response.choices[0].message.content
         except Exception as e:
             raise ProviderError(str(e), status_code=getattr(e, "status_code", None)) from e
+        if content is None:
+            raise ProviderError("OpenAI returned no text content (possibly a tool/function call response).")
+        return content
 
 
 class AnthropicAdapter:
-    def __init__(self, model: str, client=None):
+    def __init__(self, model: str, client=None, temperature: float = 0.0):
         self.model = model
+        self.temperature = temperature
         self._client = client
 
     @property
@@ -62,7 +70,11 @@ class AnthropicAdapter:
                 model=self.model,
                 max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}],
+                temperature=self.temperature,
             )
-            return response.content[0].text
+            blocks = [b.text for b in response.content if getattr(b, "type", None) == "text"]
         except Exception as e:
             raise ProviderError(str(e), status_code=getattr(e, "status_code", None)) from e
+        if not blocks:
+            raise ProviderError("Anthropic returned no text content (possibly a tool-use response).")
+        return "".join(blocks)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import List, Protocol, runtime_checkable
 
@@ -15,6 +16,15 @@ logger = logging.getLogger(__name__)
 class AlertBackend(Protocol):
     async def alert(self, result: SuiteResult) -> None:
         ...
+
+
+@dataclass
+class StdoutAlertBackend:
+    async def alert(self, result: SuiteResult) -> None:
+        print(
+            f"[llm-drift] DRIFT DETECTED: suite '{result.suite_name}' "
+            f"scored {result.drift_score:.3f}"
+        )
 
 
 @dataclass
@@ -57,3 +67,27 @@ class AlertDispatcher:
                 await backend.alert(result)
             except Exception:
                 logger.exception("Alert backend %r failed silently", backend)
+
+
+def build_dispatcher(alerts: List[dict], threshold: float) -> AlertDispatcher:
+    """Construct an AlertDispatcher from config-style alert specs.
+
+    Each spec is a dict like {"type": "slack", "webhook_url": "${SLACK_WEBHOOK_URL}"}.
+    Environment variables in URLs are expanded.
+    """
+    backends: List[AlertBackend] = []
+    for spec in alerts or []:
+        kind = spec.get("type")
+        if kind == "stdout":
+            backends.append(StdoutAlertBackend())
+        elif kind == "slack":
+            url = os.path.expandvars(spec.get("webhook_url", ""))
+            if url:
+                backends.append(SlackAlertBackend(webhook_url=url))
+        elif kind == "webhook":
+            url = os.path.expandvars(spec.get("url", ""))
+            if url:
+                backends.append(WebhookAlertBackend(url=url))
+        else:
+            logger.warning("Unknown alert type %r, skipping", kind)
+    return AlertDispatcher(backends, threshold)

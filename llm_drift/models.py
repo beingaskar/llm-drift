@@ -21,9 +21,11 @@ class ProbeSuite(BaseModel):
 
     @field_validator("probes")
     @classmethod
-    def probes_not_empty(cls, v: List[Probe]) -> List[Probe]:
-        if len(v) == 0:
-            raise ValueError("probes must contain at least one Probe")
+    def probe_ids_unique(cls, v: List[Probe]) -> List[Probe]:
+        ids = [p.id for p in v]
+        dupes = {i for i in ids if ids.count(i) > 1}
+        if dupes:
+            raise ValueError(f"probe ids must be unique; duplicates: {sorted(dupes)}")
         return v
 
     @classmethod

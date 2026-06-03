@@ -74,6 +74,23 @@ def test_fingerprint_detects_plain_format():
     assert fp.format == "plain"
 
 
+def test_fingerprint_bare_scalar_is_not_json():
+    # "42", "true", "null" all parse via json.loads but aren't structured output
+    assert fingerprint("42", _MODEL).format == "plain"
+    assert fingerprint("true", _MODEL).format == "plain"
+
+
+def test_fingerprint_stores_probe_id():
+    fp = fingerprint("hello", _MODEL, probe_id="greet")
+    assert fp.probe_id == "greet"
+
+
+def test_fingerprint_handles_none_text():
+    fp = fingerprint(None, _MODEL)
+    assert fp.raw_output == ""
+    assert fp.format == "plain"
+
+
 # ---------------------------------------------------------------------------
 # Semantic stability
 # ---------------------------------------------------------------------------

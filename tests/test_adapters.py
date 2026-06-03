@@ -19,6 +19,7 @@ def _mock_openai_client(content: str = "Hello!") -> MagicMock:
 def _mock_anthropic_client(text: str = "Hello!") -> MagicMock:
     block = MagicMock()
     block.text = text
+    block.type = "text"
     response = MagicMock()
     response.content = [block]
     client = MagicMock()
@@ -62,6 +63,39 @@ async def test_adapter_propagates_api_error_anthropic():
         await AnthropicAdapter(model="claude-sonnet-4-6", client=client).call("Hello")
 
     assert exc_info.value.status_code == 500
+
+
+async def test_openai_adapter_passes_temperature_zero():
+    client = _mock_openai_client("hi")
+    await OpenAIAdapter(model="gpt-4o", client=client).call("prompt")
+    _, kwargs = client.chat.completions.create.call_args
+    assert kwargs["temperature"] == 0.0
+
+
+async def test_openai_adapter_raises_on_none_content():
+    message = MagicMock()
+    message.content = None
+    choice = MagicMock()
+    choice.message = message
+    response = MagicMock()
+    response.choices = [choice]
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(return_value=response)
+
+    with pytest.raises(ProviderError):
+        await OpenAIAdapter(model="gpt-4o", client=client).call("prompt")
+
+
+async def test_anthropic_adapter_raises_on_no_text_block():
+    tool_block = MagicMock()
+    tool_block.type = "tool_use"   # not text
+    response = MagicMock()
+    response.content = [tool_block]
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=response)
+
+    with pytest.raises(ProviderError):
+        await AnthropicAdapter(model="claude-sonnet-4-6", client=client).call("prompt")
 
 
 def test_custom_adapter_satisfies_protocol():

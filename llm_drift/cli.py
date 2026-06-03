@@ -7,6 +7,7 @@ from typing import Optional
 
 import click
 
+from llm_drift.config import Config
 from llm_drift.models import ProbeSuite
 from llm_drift.runner import SuiteResult
 
@@ -82,42 +83,55 @@ probes:
 """
 
 
-async def _do_run(suite: ProbeSuite) -> SuiteResult:
-    """Separated so tests can patch this."""
-    from llm_drift.store import SQLiteStore
-    from llm_drift.runner import SuiteRunner
-    from llm_drift.fingerprint import SentenceTransformerModel
+def _build_adapter(suite: ProbeSuite):
     from llm_drift.adapters import OpenAIAdapter, AnthropicAdapter
 
-    store = SQLiteStore()
-    embedding_model = SentenceTransformerModel()
-
     if suite.provider == "anthropic":
-        adapter = AnthropicAdapter(model=suite.model)
-    else:
-        adapter = OpenAIAdapter(model=suite.model)
-
-    runner = SuiteRunner(suite, adapter, store, embedding_model)
-    return await runner.run()
+        return AnthropicAdapter(model=suite.model)
+    return OpenAIAdapter(model=suite.model)
 
 
-async def _do_baseline(suite: ProbeSuite) -> str:
-    """Separated so tests can patch this."""
+def _build_runner(suite: ProbeSuite, cfg: Config):
     from llm_drift.store import SQLiteStore
     from llm_drift.runner import SuiteRunner
-    from llm_drift.fingerprint import SentenceTransformerModel
-    from llm_drift.adapters import OpenAIAdapter, AnthropicAdapter
+    from llm_drift.fingerprint import build_embedding_model
+    from llm_drift.scorer import DriftScorer
 
-    store = SQLiteStore()
-    embedding_model = SentenceTransformerModel()
+    store = SQLiteStore(cfg.store_path)
+    embedding_model = build_embedding_model(cfg.embedding_model)
+    scorer = DriftScorer(threshold=cfg.drift_threshold)
+    return SuiteRunner(suite, _build_adapter(suite), store, embedding_model, scorer=scorer)
 
-    if suite.provider == "anthropic":
-        adapter = AnthropicAdapter(model=suite.model)
-    else:
-        adapter = OpenAIAdapter(model=suite.model)
 
-    runner = SuiteRunner(suite, adapter, store, embedding_model)
-    return await runner.capture_baseline()
+async def _do_run(suite: ProbeSuite, cfg: Config) -> SuiteResult:
+    """Separated so tests can patch this."""
+    from llm_drift.alerts import build_dispatcher
+
+    runner = _build_runner(suite, cfg)
+    result = await runner.run()
+
+    dispatcher = build_dispatcher(cfg.alerts, cfg.drift_threshold)
+    await dispatcher.dispatch(result)
+    return result
+
+
+async def _do_baseline(suite: ProbeSuite, cfg: Config, strict: bool = True) -> str:
+    """Separated so tests can patch this."""
+    runner = _build_runner(suite, cfg)
+    return await runner.capture_baseline(strict=strict)
+
+
+def _resolve_suite_name(suite_arg: str) -> str:
+    """Accept either a suite YAML path or a literal suite name.
+
+    report/diff store data under the suite's `name`. Letting them also accept
+    the same file path that baseline/run take avoids the footgun where
+    `report --suite probes/x.yaml` silently finds nothing.
+    """
+    p = Path(suite_arg)
+    if p.is_file():
+        return ProbeSuite.from_yaml(p).name
+    return suite_arg
 
 
 @click.group()
@@ -153,8 +167,12 @@ def init():
 
 @cli.command()
 @click.option("--suite", required=True, help="Path to suite YAML file.")
-def baseline(suite: str):
+@click.option("--config", "config_path", default=None, help="Path to llm-drift.yaml (default: ./llm-drift.yaml).")
+@click.option("--strict/--no-strict", default=True,
+              help="Reject the baseline if any assertion fails at capture time (default: strict).")
+def baseline(suite: str, config_path: Optional[str], strict: bool):
     """Capture a baseline for a probe suite."""
+    cfg = Config.load(config_path) if config_path else Config.load()
     try:
         suite_obj = ProbeSuite.from_yaml(suite)
     except FileNotFoundError:
@@ -166,7 +184,7 @@ def baseline(suite: str):
 
     click.echo(f"Capturing baseline for '{suite_obj.name}'...")
     try:
-        run_id = asyncio.run(_do_baseline(suite_obj))
+        run_id = asyncio.run(_do_baseline(suite_obj, cfg, strict=strict))
         click.echo(f"Baseline captured. run_id={run_id}")
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
@@ -175,9 +193,11 @@ def baseline(suite: str):
 
 @cli.command("run")
 @click.option("--suite", required=True, help="Path to suite YAML file.")
+@click.option("--config", "config_path", default=None, help="Path to llm-drift.yaml (default: ./llm-drift.yaml).")
 @click.option("--fail-on-drift", is_flag=True, default=False)
-def run_cmd(suite: str, fail_on_drift: bool):
+def run_cmd(suite: str, config_path: Optional[str], fail_on_drift: bool):
     """Run drift detection against the stored baseline."""
+    cfg = Config.load(config_path) if config_path else Config.load()
     try:
         suite_obj = ProbeSuite.from_yaml(suite)
     except FileNotFoundError:
@@ -188,7 +208,7 @@ def run_cmd(suite: str, fail_on_drift: bool):
         sys.exit(1)
 
     try:
-        result = asyncio.run(_do_run(suite_obj))
+        result = asyncio.run(_do_run(suite_obj, cfg))
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -201,18 +221,22 @@ def run_cmd(suite: str, fail_on_drift: bool):
 
 
 @cli.command()
-@click.option("--suite", required=True, help="Suite name (not file path).")
-def report(suite: str):
+@click.option("--suite", required=True, help="Suite name or path to suite YAML file.")
+@click.option("--config", "config_path", default=None, help="Path to llm-drift.yaml (default: ./llm-drift.yaml).")
+def report(suite: str, config_path: Optional[str]):
     """Show drift history for a suite."""
     from llm_drift.store import SQLiteStore
 
+    cfg = Config.load(config_path) if config_path else Config.load()
+    name = _resolve_suite_name(suite)
+
     async def _fetch():
-        store = SQLiteStore()
-        return await store.list_results(suite)
+        store = SQLiteStore(cfg.store_path)
+        return await store.list_results(name)
 
     results = asyncio.run(_fetch())
     if not results:
-        click.echo(f"No runs found for '{suite}'. Run 'llm-drift baseline' first.")
+        click.echo(f"No runs found for '{name}'. Run 'llm-drift baseline' first.")
         return
 
     click.echo(f"{'Run ID':<38}  {'Date':<27}  {'Score':>7}  {'Status'}")
@@ -223,25 +247,42 @@ def report(suite: str):
 
 
 @cli.command()
-@click.option("--suite", required=True, help="Suite name.")
-@click.option("--run", "run_id", default=None, help="Run ID to diff against baseline (default: latest).")
-def diff(suite: str, run_id: Optional[str]):
-    """Show raw output diff between baseline and a run."""
+@click.option("--suite", required=True, help="Suite name or path to suite YAML file.")
+@click.option("--config", "config_path", default=None, help="Path to llm-drift.yaml (default: ./llm-drift.yaml).")
+@click.option("--run", "run_id", default=None, help="Run ID to diff against baseline (default: latest run).")
+def diff(suite: str, config_path: Optional[str], run_id: Optional[str]):
+    """Show baseline vs. run output, side by side, per probe."""
     from llm_drift.store import SQLiteStore
 
-    async def _fetch():
-        store = SQLiteStore()
-        baseline_fps = await store.load_latest(suite)
-        return baseline_fps
+    cfg = Config.load(config_path) if config_path else Config.load()
+    name = _resolve_suite_name(suite)
 
-    fps = asyncio.run(_fetch())
-    if not fps:
-        click.echo(f"No baseline found for '{suite}'.", err=True)
+    async def _fetch():
+        store = SQLiteStore(cfg.store_path)
+        baseline_fps = await store.load_latest(name)
+        run_outputs = await store.load_run_outputs(name, run_id)
+        return baseline_fps, run_outputs
+
+    baseline_fps, run_outputs = asyncio.run(_fetch())
+    if not baseline_fps:
+        click.echo(f"No baseline found for '{name}'.", err=True)
+        sys.exit(1)
+    if not run_outputs:
+        click.echo(
+            f"No run outputs found for '{name}'"
+            + (f" (run {run_id})" if run_id else "")
+            + ". Run 'llm-drift run' first.",
+            err=True,
+        )
         sys.exit(1)
 
-    for i, fp in enumerate(fps):
-        click.echo(f"\n--- probe {i} baseline ---")
+    current = {o["probe_id"]: o["raw_output"] for o in run_outputs}
+    for fp in baseline_fps:
+        click.echo(f"\n=== probe: {fp.probe_id or '(unnamed)'} ===")
+        click.echo("--- baseline ---")
         click.echo(fp.raw_output or "(no raw output stored)")
+        click.echo("--- current ---")
+        click.echo(current.get(fp.probe_id, "(no output for this probe in the run)"))
 
 
 def main():

@@ -67,6 +67,20 @@ def test_suite_probes_are_probe_instances():
     assert all(isinstance(p, Probe) for p in suite.probes)
 
 
+def test_suite_rejects_duplicate_probe_ids():
+    data = {
+        "name": "dupe-suite",
+        "model": "gpt-4o",
+        "probes": [
+            {"id": "same", "prompt": "a"},
+            {"id": "same", "prompt": "b"},
+        ],
+    }
+    with pytest.raises(ValidationError) as exc_info:
+        ProbeSuite(**data)
+    assert "unique" in str(exc_info.value)
+
+
 # ---------------------------------------------------------------------------
 # ProbeSuite.from_yaml tests
 # ---------------------------------------------------------------------------

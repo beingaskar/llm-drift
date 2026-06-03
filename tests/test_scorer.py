@@ -6,7 +6,7 @@ from typing import List
 import pytest
 
 from llm_drift.fingerprint import Fingerprint
-from llm_drift.scorer import DriftScorer, DriftResult
+from llm_drift.scorer import DriftScorer, DriftResult, SuiteMismatchError
 
 
 def _vec(seed: int, dim: int = 8) -> List[float]:
@@ -14,16 +14,50 @@ def _vec(seed: int, dim: int = 8) -> List[float]:
     return [rng.gauss(0, 1) for _ in range(dim)]
 
 
-def _fp(seed: int = 0, fmt: str = "plain", assertions: list = None, tokens: int = 10) -> Fingerprint:
+def _fp(seed: int = 0, fmt: str = "plain", assertions: list = None, tokens: int = 10,
+        probe_id: str = "") -> Fingerprint:
     return Fingerprint(
         embedding=_vec(seed),
         token_count=tokens,
         format=fmt,
         assertion_results=assertions or [],
+        probe_id=probe_id,
     )
 
 
 scorer = DriftScorer()
+
+
+# ---------------------------------------------------------------------------
+# probe_id-keyed matching (guards against reorder/add/remove)
+# ---------------------------------------------------------------------------
+
+def test_score_matches_by_probe_id_regardless_of_order():
+    # baseline order [a, b], current order [b, a] — must still pair correctly
+    a_base = _fp(seed=1, probe_id="a")
+    b_base = _fp(seed=2, probe_id="b")
+    a_cur = _fp(seed=1, probe_id="a")   # identical to a_base
+    b_cur = _fp(seed=99, probe_id="b")  # drifted vs b_base
+
+    result = scorer.score([a_base, b_base], [b_cur, a_cur])
+    by_id = {pr.probe_id: pr for pr in result.probe_results}
+    assert by_id["a"].drift_score == 0.0          # correctly matched to itself
+    assert by_id["b"].drift_score > 0.0
+
+
+def test_score_raises_when_probe_added_or_removed():
+    base = [_fp(seed=1, probe_id="a"), _fp(seed=2, probe_id="b")]
+    current = [_fp(seed=1, probe_id="a")]  # 'b' removed
+    with pytest.raises(SuiteMismatchError) as exc:
+        scorer.score(base, current)
+    assert "b" in str(exc.value)
+
+
+def test_score_raises_on_length_mismatch_without_ids():
+    base = [_fp(seed=1), _fp(seed=2)]
+    current = [_fp(seed=1)]
+    with pytest.raises(SuiteMismatchError):
+        scorer.score(base, current)
 
 
 def test_score_identical_fingerprints_is_zero():

@@ -1,7 +1,14 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
-from llm_drift.alerts import AlertDispatcher, AlertBackend, SlackAlertBackend, WebhookAlertBackend
+from llm_drift.alerts import (
+    AlertDispatcher,
+    AlertBackend,
+    SlackAlertBackend,
+    StdoutAlertBackend,
+    WebhookAlertBackend,
+    build_dispatcher,
+)
 from llm_drift.runner import SuiteResult
 from llm_drift.scorer import DriftResult
 
@@ -100,3 +107,44 @@ def test_custom_backend_satisfies_protocol():
             pass
 
     assert isinstance(MyBackend(), AlertBackend)
+
+
+# ---------------------------------------------------------------------------
+# build_dispatcher (config → backends)
+# ---------------------------------------------------------------------------
+
+def test_build_dispatcher_creates_backends_by_type():
+    dispatcher = build_dispatcher(
+        [
+            {"type": "stdout"},
+            {"type": "slack", "webhook_url": "https://hooks.slack.com/x"},
+            {"type": "webhook", "url": "https://example.com/hook"},
+        ],
+        threshold=0.2,
+    )
+    types = {type(b) for b in dispatcher.backends}
+    assert StdoutAlertBackend in types
+    assert SlackAlertBackend in types
+    assert WebhookAlertBackend in types
+    assert dispatcher.threshold == 0.2
+
+
+def test_build_dispatcher_expands_env_vars(monkeypatch):
+    monkeypatch.setenv("MY_SLACK_HOOK", "https://hooks.slack.com/secret")
+    dispatcher = build_dispatcher(
+        [{"type": "slack", "webhook_url": "${MY_SLACK_HOOK}"}], threshold=0.15
+    )
+    slack = [b for b in dispatcher.backends if isinstance(b, SlackAlertBackend)][0]
+    assert slack.webhook_url == "https://hooks.slack.com/secret"
+
+
+def test_build_dispatcher_skips_unknown_type():
+    dispatcher = build_dispatcher([{"type": "carrier-pigeon"}], threshold=0.15)
+    assert dispatcher.backends == []
+
+
+async def test_stdout_backend_prints(capsys):
+    await StdoutAlertBackend().alert(_result(0.42, drifted=True))
+    captured = capsys.readouterr()
+    assert "DRIFT DETECTED" in captured.out
+    assert "my-suite" in captured.out

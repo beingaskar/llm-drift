@@ -13,8 +13,8 @@ from llm_drift.store import SQLiteStore
 cli_runner = CliRunner()
 
 
-def _fp(raw: str = "hello") -> Fingerprint:
-    return Fingerprint(embedding=[0.1] * 8, token_count=1, format="plain", raw_output=raw)
+def _fp(raw: str = "hello", probe_id: str = "p1") -> Fingerprint:
+    return Fingerprint(embedding=[0.1] * 8, token_count=1, format="plain", raw_output=raw, probe_id=probe_id)
 
 
 class ConstantModel:
@@ -79,14 +79,18 @@ def test_report_no_runs_prints_helpful_message():
 # ---------------------------------------------------------------------------
 
 def test_diff_shows_baseline_vs_latest(tmp_path: Path):
-    fps = [_fp("the baseline output text")]
-    with patch.object(SQLiteStore, "load_latest", new=AsyncMock(return_value=fps)):
+    fps = [_fp("the baseline output text", probe_id="p1")]
+    run_outputs = [{"probe_id": "p1", "raw_output": "the current output text"}]
+    with patch.object(SQLiteStore, "load_latest", new=AsyncMock(return_value=fps)), \
+         patch.object(SQLiteStore, "load_run_outputs", new=AsyncMock(return_value=run_outputs)):
         result = cli_runner.invoke(cli, ["diff", "--suite", "history-suite"])
     assert "the baseline output text" in result.output
+    assert "the current output text" in result.output
     assert result.exit_code == 0
 
 
 def test_diff_no_baseline_exits_nonzero():
-    with patch.object(SQLiteStore, "load_latest", new=AsyncMock(return_value=None)):
+    with patch.object(SQLiteStore, "load_latest", new=AsyncMock(return_value=None)), \
+         patch.object(SQLiteStore, "load_run_outputs", new=AsyncMock(return_value=None)):
         result = cli_runner.invoke(cli, ["diff", "--suite", "empty-suite"])
     assert result.exit_code == 1
