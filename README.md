@@ -40,21 +40,26 @@ The drift score is a weighted combination of three signals:
 
 ## Installation
 
+> **Note:** not yet published to PyPI. Until then, install from GitHub.
+
 ```bash
-pip install llm-drift
+pip install git+https://github.com/beingaskar/llm-drift.git
 ```
 
-With provider support:
+With provider support and local embeddings:
 
 ```bash
-pip install "llm-drift[openai]"       # adds openai
-pip install "llm-drift[anthropic]"    # adds anthropic
+# OpenAI + local embeddings (no embedding API key needed)
+pip install "llm-drift[openai,sentence-transformers] @ git+https://github.com/beingaskar/llm-drift.git"
+
+# Anthropic instead
+pip install "llm-drift[anthropic,sentence-transformers] @ git+https://github.com/beingaskar/llm-drift.git"
 ```
 
-With local embeddings (no API key needed):
+Once published to PyPI, this becomes simply:
 
 ```bash
-pip install "llm-drift[sentence-transformers]"
+pip install "llm-drift[openai,sentence-transformers]"
 ```
 
 Python 3.9+ required.
@@ -143,23 +148,23 @@ probes:
 ### 3. Capture a baseline
 
 ```bash
-llm-drift baseline --suite probes/invoice-extractor.yaml
+llm-drift baseline --suite probes/example.yaml
 ```
 
 ### 4. Run drift detection
 
 ```bash
-llm-drift run --suite probes/invoice-extractor.yaml
-# Suite: invoice-extractor  score: 0.031  [OK]
+llm-drift run --suite probes/example.yaml
+# Suite: example-suite  score: 0.031  [OK]
 
 # Exit with code 1 if drift detected — useful in CI
-llm-drift run --suite probes/invoice-extractor.yaml --fail-on-drift
+llm-drift run --suite probes/example.yaml --fail-on-drift
 ```
 
 ### 5. View history
 
 ```bash
-llm-drift report --suite invoice-extractor
+llm-drift report --suite example-suite
 ```
 
 ```
@@ -286,9 +291,9 @@ llm-drift diff --suite <name|path>                Show baseline vs. latest run, 
 llm-drift diff --suite <name|path> --run <id>     Diff against a specific run
 ```
 
-All commands accept `--config <path>` (defaults to `./llm-drift.yaml`). `report` and
-`diff` accept either the suite **name** or the same YAML **path** you pass to
-`baseline`/`run`.
+`baseline`, `run`, `report`, and `diff` accept `--config <path>` (defaults to
+`./llm-drift.yaml`). `report` and `diff` accept either the suite **name** or the same
+YAML **path** you pass to `baseline`/`run`.
 
 ### Notes
 
@@ -324,7 +329,7 @@ llm_drift/
 ## Development
 
 ```bash
-git clone https://github.com/yourname/llm-drift
+git clone https://github.com/beingaskar/llm-drift.git
 cd llm-drift
 pip install -e ".[dev]"
 pytest
